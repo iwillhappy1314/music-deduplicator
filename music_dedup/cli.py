@@ -20,6 +20,15 @@ from .core import (
     scan_library,
     write_report,
 )
+from .enrichment import (
+    ARTWORK_API_URL,
+    EnrichmentAction,
+    LYRICS_API_URL,
+    build_enrichment_report,
+    fetch_album_artwork,
+    fetch_lyrics,
+)
+from .web import WebConfig, run_web_server
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,6 +57,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("DEDUP_ARTIST_MAP"),
         help="WebM 目录到 Artist 的 JSON 映射，默认读取 DEDUP_ARTIST_MAP。",
     )
+    parser.add_argument(
+        "--fetch-lyrics",
+        action="store_true",
+        help="为缺少歌词的音频获取同目录外挂歌词；需要同时使用 --apply。",
+    )
+    parser.add_argument(
+        "--fetch-artwork",
+        action="store_true",
+        help="为缺少封面的专辑目录获取 cover 图片；需要同时使用 --apply。",
+    )
+    parser.add_argument(
+        "--lyrics-api-url",
+        default=os.environ.get("LYRICS_API_URL", LYRICS_API_URL),
+        help="歌词接口地址，默认使用 LRCLIB。",
+    )
+    parser.add_argument(
+        "--artwork-api-url",
+        default=os.environ.get("ARTWORK_API_URL", ARTWORK_API_URL),
+        help="专辑封面搜索接口地址，默认使用 iTunes Search API。",
+    )
+    parser.add_argument(
+        "--request-delay",
+        type=float,
+        default=float(os.environ.get("ENRICHMENT_REQUEST_DELAY", "0.35")),
+        help="连续网络请求之间的间隔秒数，默认 0.35。",
+    )
+    parser.add_argument(
+        "--skip-dedup",
+        action="store_true",
+        help="只执行 --fetch-lyrics 或 --fetch-artwork，不重复执行去重。",
+    )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--apply",
@@ -68,6 +108,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--lock-file",
         default=os.environ.get("DEDUP_LOCK_FILE", "/tmp/music-deduplicator.lock"),
         help="并发锁文件路径。",
+    )
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="启动 Web 控制台，不直接执行一次性命令。",
+    )
+    parser.add_argument(
+        "--web-host",
+        default=os.environ.get("WEB_HOST", "0.0.0.0"),
+        help="Web 控制台监听地址，默认 0.0.0.0。",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=int(os.environ.get("WEB_PORT", "8080")),
+        help="Web 控制台监听端口，默认 8080。",
+    )
+    parser.add_argument(
+        "--web-token",
+        default=os.environ.get("WEB_TOKEN", ""),
+        help="可选的 Web 控制台访问令牌。",
+    )
+    parser.add_argument(
+        "--web-log",
+        default=os.environ.get("WEB_LOG", "/reports/web.log"),
+        help="Web 控制台任务日志路径。",
     )
     return parser
 
@@ -127,28 +193,92 @@ def print_summary(
             _print_group(group, scan.root, actions)
 
 
+def print_enrichment_summary(actions: Sequence[EnrichmentAction]) -> None:
+    """输出歌词和封面补齐的简明结果。"""
+
+    created_count = sum(action.status == "created" for action in actions)
+    not_found_count = sum(action.status == "not_found" for action in actions)
+    skipped_count = sum(
+        action.status in {"skipped_exists", "skipped_metadata", "skipped_missing"}
+        for action in actions
+    )
+    failed_count = sum(action.status == "failed" for action in actions)
+    print(
+        "补齐结果: "
+        f"新增 {created_count} 个，已有或跳过 {skipped_count} 个，"
+        f"未找到 {not_found_count} 个，失败 {failed_count} 个"
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """执行一次扫描、可选移动和报告写入，并返回进程退出码。"""
 
     parser = build_parser()
     arguments = parser.parse_args(argv)
+    if arguments.web:
+        run_web_server(
+            WebConfig(
+                root=arguments.root,
+                quarantine=arguments.quarantine,
+                report=arguments.report or "/reports/latest.json",
+                artist_map=arguments.artist_map,
+                host=arguments.web_host,
+                port=arguments.web_port,
+                token=arguments.web_token,
+                log_path=arguments.web_log,
+                run_on_start=os.environ.get("WEB_RUN_ON_START", "true").casefold()
+                not in {"0", "false", "no", "off"},
+                request_delay=arguments.request_delay,
+                lyrics_api_url=arguments.lyrics_api_url,
+                artwork_api_url=arguments.artwork_api_url,
+            )
+        )
+        return 0
+    if (arguments.fetch_lyrics or arguments.fetch_artwork) and not arguments.apply:
+        parser.error("获取歌词或封面会修改音乐库，必须同时使用 --apply")
+    if arguments.skip_dedup and not (arguments.fetch_lyrics or arguments.fetch_artwork):
+        parser.error("--skip-dedup 必须与 --fetch-lyrics 或 --fetch-artwork 一起使用")
+    if arguments.request_delay < 0:
+        parser.error("--request-delay 不能小于 0")
+    actions: tuple[MoveAction, ...] = ()
+    enrichment_actions: list[EnrichmentAction] = []
     try:
         with process_lock(Path(arguments.lock_file)):
             artist_map = load_artist_map(
                 Path(arguments.artist_map) if arguments.artist_map else None
             )
             scan = scan_library(Path(arguments.root), artist_map)
-            duplicate_groups = find_duplicate_groups(scan.records)
-            actions: tuple[MoveAction, ...] = ()
-            apply_blocked = arguments.apply and any(
+            dedup_enabled = not arguments.skip_dedup
+            duplicate_groups = find_duplicate_groups(scan.records) if dedup_enabled else ()
+            apply_blocked = dedup_enabled and arguments.apply and any(
                 issue.severity == "error" for issue in scan.issues
             )
-            if arguments.apply and not apply_blocked:
+            if dedup_enabled and arguments.apply and not apply_blocked:
                 actions = apply_duplicates(
                     scan,
                     duplicate_groups,
                     Path(arguments.quarantine),
                 )
+            if (arguments.fetch_lyrics or arguments.fetch_artwork) and not apply_blocked:
+                enrichment_scan = scan
+                if dedup_enabled and arguments.apply:
+                    enrichment_scan = scan_library(Path(arguments.root), artist_map)
+                if arguments.fetch_lyrics:
+                    enrichment_actions.extend(
+                        fetch_lyrics(
+                            enrichment_scan.records,
+                            request_delay=arguments.request_delay,
+                            api_url=arguments.lyrics_api_url,
+                        )
+                    )
+                if arguments.fetch_artwork:
+                    enrichment_actions.extend(
+                        fetch_album_artwork(
+                            enrichment_scan.records,
+                            request_delay=arguments.request_delay,
+                            api_url=arguments.artwork_api_url,
+                        )
+                    )
             report = build_report(
                 scan,
                 duplicate_groups,
@@ -157,6 +287,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 Path(arguments.quarantine),
                 apply_blocked,
             )
+            if arguments.fetch_lyrics or arguments.fetch_artwork:
+                report["enrichment"] = build_enrichment_report(
+                    enrichment_actions,
+                    scan.root,
+                )
             if arguments.report:
                 write_report(report, Path(arguments.report))
             print_summary(
@@ -166,6 +301,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 arguments.apply,
                 arguments.verbose,
             )
+            if enrichment_actions:
+                print_enrichment_summary(enrichment_actions)
             if apply_blocked:
                 print("错误: 扫描存在读取错误，已阻止移动；请先修复后重试。", file=sys.stderr)
                 return 2
@@ -176,5 +313,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     has_action_failures = any(
         action.status in {"failed", "skipped_changed"} for action in actions
     )
+    has_enrichment_failures = any(
+        action.status == "failed" for action in enrichment_actions
+    )
     has_scan_errors = any(issue.severity == "error" for issue in scan.issues)
-    return 2 if has_action_failures or has_scan_errors else 0
+    return 2 if has_action_failures or has_enrichment_failures or has_scan_errors else 0

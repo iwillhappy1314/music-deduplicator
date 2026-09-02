@@ -18,10 +18,13 @@
 - Artist 无法明确取得的文件会跳过，不会根据普通专辑名猜测演唱者；文件名也不会被当作 Artist。
 - 匹配会统一 Artist 的繁体和简体中文，再统一 Unicode 兼容字符、大小写和多余空白；Title 不做简繁转换，也不会删除标点或合并其他不同文字，避免误合并。
 - 简繁转换只用于 Artist 的去重比较键，不会改写音频文件标签、Artist 映射文件或报告中的原始 Artist。
-- Docker Compose 默认使用 `--apply`；每次 Dockge 启动/重启容器都会执行一次去重。
-- `--apply` 只会把重复文件移动到隔离目录，不会永久删除；容器成功退出后不会自动循环运行。
+- Docker Compose 默认启动 Web 控制台；`WEB_RUN_ON_START=true` 时每次启动服务会先执行一次去重。
+- Web 控制台可以单独触发去重、外挂歌词、专辑封面或全部操作；任务完成后会保留日志和最新报告。
+- `--apply` 只会把重复文件移动到隔离目录，不会永久删除；外挂歌词和封面只补齐缺失文件，不覆盖已有文件。
 - 如果扫描出现读取权限或解码错误，`--apply` 会自动阻止所有移动，避免基于不完整扫描清理。
 - `._*`、隐藏目录和非音频文件会忽略。当前支持 Mutagen 能识别的常见音频格式，并用 `ffprobe` 补充读取 WebM 等容器。
+
+可选的歌词和封面补齐使用 Artist、Title、Album 元数据。歌词通过 LRCLIB 查询，优先写入同步歌词 `.lrc`，没有同步歌词时写入 `.txt`；封面通过 iTunes Search API 精确匹配 Artist 和 Album 后写入专辑目录的 `cover.*`。接口不可用或找不到结果时只记录在报告中，不会阻止去重。
 
 每次运行都可以写出 JSON 报告，其中包含重复组、保留文件、被隔离文件、跳过原因和失败动作。
 
@@ -54,7 +57,7 @@ docker run --rm \
 
 ## 部署到 Synology Container Manager
 
-假设音乐共享文件夹是 `/volume1/music`，在 NAS SSH 或 Container Manager 项目目录中执行：
+以下示例按你的 NAS 路径 `/volume2/music` 配置音乐共享文件夹；在 NAS SSH 或 Container Manager 项目目录中执行：
 
 ```bash
 mkdir -p /volume1/docker/music-deduplicator
@@ -74,19 +77,53 @@ docker compose pull
 docker compose run --rm music-deduplicator --apply --report /reports/first-apply.json --verbose
 ```
 
-如果 NAS 上的共享文件夹路径不同，修改 `.env` 中的四个路径。Artist 映射文件的键必须是相对于 `/volume1/music` 的目录路径；没有列入映射的 WebM 会继续跳过。隔离目录、报告目录和配置目录建议放在音乐共享文件夹外面，避免它们再次被扫描。
+如果 NAS 上的共享文件夹路径不同，修改 `.env` 中的四个路径。Artist 映射文件的键必须是相对于 `/volume2/music` 的目录路径；没有列入映射的 WebM 会继续跳过。隔离目录、报告目录和配置目录建议放在音乐共享文件夹外面，避免它们再次被扫描。
 
-查看 `first-apply.json` 确认移动结果。之后在 Dockge 中启动或重启容器即可再次执行一次去重：
+查看 `first-apply.json` 确认移动结果。之后在 Dockge 中启动项目即可打开 Web 控制台；默认启动时会再执行一次去重：
 
 ```bash
 cd /volume1/docker/music-deduplicator
-docker compose run --rm music-deduplicator --apply --report /reports/first-apply.json
+docker compose up -d
+```
+
+浏览器打开 `http://群晖IP:8080`。如果 `.env` 设置了 `WEB_TOKEN`，在页面输入相同令牌后才能点击操作按钮。建议在首次部署时设置一个足够长的随机令牌。
+
+如果不希望 Dockge 启动时自动去重，将 `.env` 改为：
+
+```dotenv
+WEB_RUN_ON_START=false
+```
+
+之后仍可以在控制台中手动点击「执行去重」。
+
+## Web 控制台操作
+
+控制台提供以下操作：
+
+- 「执行去重」：按 Title + Artist 规则移动重复文件。
+- 「获取外挂歌词」：只获取缺少 `.lrc`、`.txt` 等外挂歌词的音频，不重复执行去重。
+- 「获取专辑封面」：只处理没有常见 `cover.*`、`folder.*` 或 `front.*` 文件的专辑目录。
+- 「全部执行」：先去重，再为当前仍存在的文件获取歌词和封面。
+
+所有操作都会写入 `/volume1/music-dedup-reports/latest.json` 和 `web.log`。Web 服务只接受固定任务类型，不接受任意 shell 命令，并且同一时间只允许运行一个任务。
+
+歌词生成后，Navidrome 建议把外挂歌词放在优先级中：
+
+```yaml
+environment:
+  ND_LYRICSPRIORITY: ".lrc,.txt,embedded"
+```
+
+然后对 Navidrome 执行一次完整扫描：
+
+```bash
+docker compose exec navidrome navidrome scan --full
 ```
 
 此命令只移动重复文件。原始相对路径会在隔离目录中保留，例如：
 
 ```text
-/volume1/music/Album/song.mp3
+/volume2/music/Album/song.mp3
 → /volume1/music-dedup-quarantine/Album/song.mp3
 ```
 
@@ -119,6 +156,11 @@ GitHub Actions 每次向 `main` 推送工具改动后会自动构建并更新 `l
 --artist-map PATH   WebM 目录到 Artist 的 JSON 映射，可选
 --apply             执行移动；不传时只预览
 --dry-run           明确指定只预览，不修改文件
+--fetch-lyrics      获取缺失的外挂歌词，需要同时使用 --apply
+--fetch-artwork     获取缺失的专辑封面，需要同时使用 --apply
+--skip-dedup        只执行歌词或封面操作，不重复执行去重
+--request-delay SEC 网络请求间隔，默认 0.35
+--web               启动 Web 控制台
 --verbose           在终端列出每个重复组
 --lock-file PATH    防止并发运行，默认 /tmp/music-deduplicator.lock
 ```

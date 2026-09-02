@@ -313,6 +313,76 @@ def read_audio_metadata(
     return title, artist
 
 
+def read_album_metadata(path: Path) -> str:
+    """读取用于查询专辑封面的 Album 标签，读取失败时返回空字符串。"""
+
+    if mutagen is not None:
+        try:
+            audio = mutagen.File(path, easy=True)
+        except Exception:  # Optional enrichment must not block the main scan.
+            audio = None
+        if audio is not None:
+            album = _find_tag(audio.tags or {}, ("album", "TALB", "©alb", "ALBUM"))
+            if album:
+                return album
+
+    command = shutil.which("ffprobe")
+    if command is None:
+        return ""
+    try:
+        completed = subprocess.run(
+            [
+                command,
+                "-v",
+                "error",
+                "-show_entries",
+                "format_tags=album,ALBUM,©alb",
+                "-of",
+                "json",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        payload = json.loads(completed.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return ""
+
+    tags = payload.get("format", {}).get("tags", {})
+    if not isinstance(tags, dict):
+        return ""
+    return _find_tag(tags, ("album", "ALBUM", "©alb"))
+
+
+def has_embedded_lyrics(path: Path) -> bool:
+    """判断音频是否已有非空嵌入歌词，避免外挂歌词覆盖现有内容。"""
+
+    if mutagen is None:
+        return False
+    try:
+        audio = mutagen.File(path, easy=False)
+    except Exception:  # A failed optional check should not stop enrichment.
+        return False
+    if audio is None or not audio.tags:
+        return False
+
+    lyric_aliases = {"lyrics", "unsyncedlyrics", "uslt", "sylt", "©lyr", "@lyr"}
+    for key, value in audio.tags.items():
+        key_text = str(key).casefold()
+        if not (
+            key_text in lyric_aliases
+            or key_text.startswith("uslt")
+            or key_text.startswith("sylt")
+            or key_text.startswith("lyrics:")
+        ):
+            continue
+        if normalize_tag_value(value):
+            return True
+    return False
+
+
 def extract_webm_filename_title(path: Path) -> str:
     """从 WebM 文件名提取歌曲名并移除 yt-dlp 格式后缀如 `.f248`。"""
 

@@ -2,14 +2,21 @@ services:
   music-deduplicator:
     image: ghcr.io/iwillhappy1314/music-deduplicator:latest
     restart: "no"
+    ports:
+      - "${WEB_PORT:-8080}:8080"
     environment:
       MUSIC_ROOT: /music
       DEDUP_QUARANTINE: /quarantine
       DEDUP_REPORT: /reports/latest.json
       DEDUP_ARTIST_MAP: /config/artist-map.json
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: 8080
+      WEB_TOKEN: ${WEB_TOKEN:-}
+      WEB_RUN_ON_START: ${WEB_RUN_ON_START:-true}
+      WEB_LOG: /reports/web.log
     volumes:
-      - ${MUSIC_LIBRARY_PATH:-/volume1/music}:/music:rw
+      - ${MUSIC_LIBRARY_PATH:-/volume2/music}:/music:rw
       - ${MUSIC_QUARANTINE_PATH:-/volume1/music-dedup-quarantine}:/quarantine:rw
       - ${MUSIC_REPORT_PATH:-/volume1/music-dedup-reports}:/reports:rw
       - ${MUSIC_CONFIG_PATH:-/volume1/music-dedup-config}:/config:ro
-    command: ["--apply", "--report", "/reports/latest.json"]
+    command: ["--web"]
