@@ -17,7 +17,8 @@
 - `.webm` 缺少标签时，从文件名提取 Title，并移除类似 `.f248` 的下载格式后缀；Artist 只从明确配置的目录映射中读取。
 - Artist 无法明确取得的文件会跳过，不会根据普通专辑名猜测演唱者；文件名也不会被当作 Artist。
 - 匹配会统一 Unicode 兼容字符、大小写和多余空白，但不会删除标点或合并不同文字，避免误合并。
-- 默认是 dry-run，不会修改音乐库。`--apply` 只会把重复文件移动到隔离目录，不会永久删除。
+- Docker Compose 默认使用 `--apply`；每次 Dockge 启动/重启容器都会执行一次去重。
+- `--apply` 只会把重复文件移动到隔离目录，不会永久删除；容器成功退出后不会自动循环运行。
 - 如果扫描出现读取权限或解码错误，`--apply` 会自动阻止所有移动，避免基于不完整扫描清理。
 - `._*`、隐藏目录和非音频文件会忽略。当前支持 Mutagen 能识别的常见音频格式，并用 `ffprobe` 补充读取 WebM 等容器。
 
@@ -69,12 +70,12 @@ cd /volume1/docker/music-deduplicator
 cp .env.example .env
 cp artist-map.example.json /volume1/music-dedup-config/artist-map.json
 docker compose pull
-docker compose run --rm music-deduplicator --report /reports/first-preview.json --verbose
+docker compose run --rm music-deduplicator --apply --report /reports/first-apply.json --verbose
 ```
 
 如果 NAS 上的共享文件夹路径不同，修改 `.env` 中的四个路径。Artist 映射文件的键必须是相对于 `/volume1/music` 的目录路径；没有列入映射的 WebM 会继续跳过。隔离目录、报告目录和配置目录建议放在音乐共享文件夹外面，避免它们再次被扫描。
 
-查看 `first-preview.json` 确认无误后，第一次手动执行：
+查看 `first-apply.json` 确认移动结果。之后在 Dockge 中启动或重启容器即可再次执行一次去重：
 
 ```bash
 cd /volume1/docker/music-deduplicator

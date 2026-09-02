@@ -1,6 +1,7 @@
 services:
   music-deduplicator:
     image: ghcr.io/iwillhappy1314/music-deduplicator:latest
+    restart: "no"
     environment:
       MUSIC_ROOT: /music
       DEDUP_QUARANTINE: /quarantine
@@ -11,4 +12,4 @@ services:
       - ${MUSIC_QUARANTINE_PATH:-/volume1/music-dedup-quarantine}:/quarantine:rw
       - ${MUSIC_REPORT_PATH:-/volume1/music-dedup-reports}:/reports:rw
       - ${MUSIC_CONFIG_PATH:-/volume1/music-dedup-config}:/config:ro
-    command: ["--report", "/reports/latest.json"]
+    command: ["--apply", "--report", "/reports/latest.json"]
