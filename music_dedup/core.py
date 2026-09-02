@@ -28,6 +28,13 @@ try:
 except ImportError:  # pragma: no cover - exercised by the dependency check, not normal runs.
     mutagen = None
 
+try:
+    from opencc import OpenCC
+
+    _OPENCC_CONVERTER = OpenCC("t2s")
+except (ImportError, OSError):  # pragma: no cover - exercised by dependency checks.
+    _OPENCC_CONVERTER = None
+
 
 SUPPORTED_AUDIO_SUFFIXES = frozenset(
     {
@@ -187,6 +194,15 @@ def normalize_for_match(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value)
     normalized = " ".join(normalized.split())
     return normalized.casefold()
+
+
+def normalize_artist_for_match(value: str) -> str:
+    """将 Artist 转为简体中文后生成去重比较键，不修改原始标签。"""
+
+    if _OPENCC_CONVERTER is None:
+        raise MetadataError("未安装 OpenCC 依赖，请重新构建 Docker 镜像")
+    simplified = _OPENCC_CONVERTER.convert(value)
+    return normalize_for_match(simplified)
 
 
 def _find_tag(tags: Mapping[object, object], aliases: Sequence[str]) -> str:
@@ -419,6 +435,8 @@ def scan_library(
             else:
                 title, artist = read_audio_metadata(path)
             stat = path.stat()
+            normalized_title = normalize_for_match(title)
+            normalized_artist = normalize_artist_for_match(artist)
         except MissingMetadataError as error:
             issues.append(ScanIssue(path, str(error), "info"))
             continue
@@ -431,8 +449,8 @@ def scan_library(
                 path=path,
                 title=title,
                 artist=artist,
-                normalized_title=normalize_for_match(title),
-                normalized_artist=normalize_for_match(artist),
+                normalized_title=normalized_title,
+                normalized_artist=normalized_artist,
                 size=stat.st_size,
                 modified_ns=stat.st_mtime_ns,
             )

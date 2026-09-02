@@ -14,6 +14,7 @@ from music_dedup.core import (
     extract_webm_filename_title,
     find_duplicate_groups,
     load_artist_map,
+    normalize_artist_for_match,
     normalize_for_match,
     read_audio_metadata,
     scan_library,
@@ -35,6 +36,34 @@ class DeduplicationTestCase(unittest.TestCase):
         """歌曲名匹配应统一兼容字符、大小写和多余空白。"""
 
         self.assertEqual(normalize_for_match("  Ｓｏｎｇ　Name  "), "song name")
+
+    def test_artist_normalization_converts_traditional_to_simplified(self) -> None:
+        """Artist 比较键应把繁体中文转换为简体中文。"""
+
+        self.assertEqual(
+            normalize_artist_for_match("張學友"),
+            normalize_for_match("张学友"),
+        )
+
+    def test_traditional_and_simplified_artists_are_duplicate_group(self) -> None:
+        """繁体和简体 Artist 相同的歌曲应进入同一重复组。"""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            files = {
+                self._create_file(root, "traditional.mp3", 10): ("歌曲", "張學友"),
+                self._create_file(root, "simplified.mp3", 20): ("歌曲", "张学友"),
+            }
+            with patch(
+                "music_dedup.core.read_audio_metadata",
+                side_effect=lambda path: files[path.resolve()],
+            ):
+                scan = scan_library(root)
+
+            groups = find_duplicate_groups(scan.records)
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].duplicate_count, 1)
 
     def test_webm_filename_title_removes_download_format_suffix(self) -> None:
         """WebM Title 回退应去除格式码而保留歌曲名中的普通句点。"""
