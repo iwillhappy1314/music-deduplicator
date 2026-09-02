@@ -13,7 +13,9 @@
 - 同一组都不是 FLAC：保留文件最大的一个。
 - 文件大小相同：按路径排序选择，保证每次结果稳定。
 - 歌曲名相同但演唱者不同：不合并，全部保留。
-- 只读取标签中的 `title` 和 `artist`，不会根据文件名猜测；缺少任一标签的文件会跳过并记录在报告中。
+- 优先读取音频内嵌的 `title` 和 `artist` 标签。
+- `.webm` 缺少标签时，从文件名提取 Title，并移除类似 `.f248` 的下载格式后缀；Artist 只从明确配置的目录映射中读取。
+- Artist 无法明确取得的文件会跳过，不会根据普通专辑名猜测演唱者；文件名也不会被当作 Artist。
 - 匹配会统一 Unicode 兼容字符、大小写和多余空白，但不会删除标点或合并不同文字，避免误合并。
 - 默认是 dry-run，不会修改音乐库。`--apply` 只会把重复文件移动到隔离目录，不会永久删除。
 - 如果扫描出现读取权限或解码错误，`--apply` 会自动阻止所有移动，避免基于不完整扫描清理。
@@ -37,6 +39,17 @@ docker run --rm \
 
 预览报告在 `/tmp/music-dedup-reports/preview.json`。确认保留结果后，再在 NAS 上执行 `--apply`。
 
+本地预览如果要处理示例中的李宗盛 WebM 目录，可以额外传入示例映射：
+
+```bash
+docker run --rm \
+  -v /Volumes/music:/music:ro \
+  -v /tmp/music-dedup-reports:/reports \
+  -v /Volumes/Storage/AiProjects/music-deduplicator/artist-map.example.json:/config/artist-map.json:ro \
+  music-deduplicator:local \
+  --artist-map /config/artist-map.json --report /reports/preview-with-webm.json --verbose
+```
+
 ## 部署到 Synology Container Manager
 
 假设音乐共享文件夹是 `/volume1/music`，在 NAS SSH 或 Container Manager 项目目录中执行：
@@ -45,6 +58,7 @@ docker run --rm \
 mkdir -p /volume1/docker/music-deduplicator
 mkdir -p /volume1/music-dedup-quarantine
 mkdir -p /volume1/music-dedup-reports
+mkdir -p /volume1/music-dedup-config
 ```
 
 把本仓库复制或克隆到 `/volume1/docker/music-deduplicator`，然后：
@@ -53,11 +67,12 @@ mkdir -p /volume1/music-dedup-reports
 git clone https://github.com/iwillhappy1314/music-deduplicator.git /volume1/docker/music-deduplicator
 cd /volume1/docker/music-deduplicator
 cp .env.example .env
+cp artist-map.example.json /volume1/music-dedup-config/artist-map.json
 docker compose pull
 docker compose run --rm music-deduplicator --report /reports/first-preview.json --verbose
 ```
 
-如果 NAS 上的共享文件夹路径不同，修改 `.env` 中的三个路径。隔离目录和报告目录建议放在音乐共享文件夹外面，避免它们再次被扫描。
+如果 NAS 上的共享文件夹路径不同，修改 `.env` 中的四个路径。Artist 映射文件的键必须是相对于 `/volume1/music` 的目录路径；没有列入映射的 WebM 会继续跳过。隔离目录、报告目录和配置目录建议放在音乐共享文件夹外面，避免它们再次被扫描。
 
 查看 `first-preview.json` 确认无误后，第一次手动执行：
 
@@ -99,6 +114,7 @@ GitHub Actions 每次向 `main` 推送工具改动后会自动构建并更新 `l
 --root PATH          音乐库目录，默认读取 MUSIC_ROOT 或 /music
 --quarantine PATH   隔离目录，默认读取 DEDUP_QUARANTINE 或 /quarantine
 --report PATH       JSON 报告路径，可选
+--artist-map PATH   WebM 目录到 Artist 的 JSON 映射，可选
 --apply             执行移动；不传时只预览
 --dry-run           明确指定只预览，不修改文件
 --verbose           在终端列出每个重复组

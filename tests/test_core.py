@@ -11,8 +11,11 @@ from music_dedup.core import (
     MissingMetadataError,
     apply_duplicates,
     build_report,
+    extract_webm_filename_title,
     find_duplicate_groups,
+    load_artist_map,
     normalize_for_match,
+    read_audio_metadata,
     scan_library,
 )
 
@@ -32,6 +35,47 @@ class DeduplicationTestCase(unittest.TestCase):
         """歌曲名匹配应统一兼容字符、大小写和多余空白。"""
 
         self.assertEqual(normalize_for_match("  Ｓｏｎｇ　Name  "), "song name")
+
+    def test_webm_filename_title_removes_download_format_suffix(self) -> None:
+        """WebM Title 回退应去除格式码而保留歌曲名中的普通句点。"""
+
+        self.assertEqual(
+            extract_webm_filename_title(Path("我是真的愛你.f248.webm")),
+            "我是真的愛你",
+        )
+        self.assertEqual(
+            extract_webm_filename_title(Path("Mr. Brightside.webm")),
+            "Mr. Brightside",
+        )
+
+    def test_webm_metadata_can_use_explicit_artist_fallback(self) -> None:
+        """内嵌标签缺失时应使用调用方明确提供的 WebM 回退值。"""
+
+        with patch(
+            "music_dedup.core._read_audio_tags",
+            return_value=("", ""),
+        ):
+            metadata = read_audio_metadata(
+                Path("song.webm"),
+                fallback_title="Song",
+                fallback_artist="Artist",
+            )
+
+        self.assertEqual(metadata, ("Song", "Artist"))
+
+    def test_artist_map_uses_relative_directory_keys(self) -> None:
+        """Artist 映射应读取相对于音乐库根目录的目录键。"""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            map_path = Path(temporary_directory) / "artist-map.json"
+            map_path.write_text(
+                '{"Album - Live": "Artist"}',
+                encoding="utf-8",
+            )
+
+            artist_map = load_artist_map(map_path)
+
+        self.assertEqual(artist_map, {"Album - Live": "Artist"})
 
     def test_flac_is_preferred_then_largest_flac(self) -> None:
         """存在多个 FLAC 时应保留最大的 FLAC，而不是更大的 MP3。"""

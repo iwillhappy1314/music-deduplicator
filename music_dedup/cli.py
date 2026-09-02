@@ -15,6 +15,7 @@ from .core import (
     apply_duplicates,
     build_report,
     find_duplicate_groups,
+    load_artist_map,
     process_lock,
     scan_library,
     write_report,
@@ -41,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--report",
         default=os.environ.get("DEDUP_REPORT"),
         help="可选的 JSON 报告路径。",
+    )
+    parser.add_argument(
+        "--artist-map",
+        default=os.environ.get("DEDUP_ARTIST_MAP"),
+        help="WebM 目录到 Artist 的 JSON 映射，默认读取 DEDUP_ARTIST_MAP。",
     )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
@@ -128,7 +134,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     try:
         with process_lock(Path(arguments.lock_file)):
-            scan = scan_library(Path(arguments.root))
+            artist_map = load_artist_map(
+                Path(arguments.artist_map) if arguments.artist_map else None
+            )
+            scan = scan_library(Path(arguments.root), artist_map)
             duplicate_groups = find_duplicate_groups(scan.records)
             actions: tuple[MoveAction, ...] = ()
             apply_blocked = arguments.apply and any(

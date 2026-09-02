@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -14,6 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Iterator, Mapping, Sequence
 
 try:
@@ -254,8 +256,8 @@ def _read_with_ffprobe(path: Path) -> tuple[str, str]:
     return _find_tag(tags, ("title", "TITLE")), _find_tag(tags, ("artist", "ARTIST"))
 
 
-def read_audio_metadata(path: Path) -> tuple[str, str]:
-    """读取并验证音频的歌曲名和演唱者，缺失时拒绝参与去重。"""
+def _read_audio_tags(path: Path) -> tuple[str, str]:
+    """读取音频内嵌的歌曲名和演唱者，并保留可能缺失的单个字段。"""
 
     mutagen_error: MetadataError | None = None
     try:
@@ -277,8 +279,80 @@ def read_audio_metadata(path: Path) -> tuple[str, str]:
     if not title or not artist:
         if mutagen_error is not None and ffprobe_error is not None:
             raise MetadataError(f"{mutagen_error}; {ffprobe_error}")
+    return title, artist
+
+
+def read_audio_metadata(
+    path: Path,
+    fallback_title: str = "",
+    fallback_artist: str = "",
+) -> tuple[str, str]:
+    """读取并验证音频标签，必要时使用调用方提供的保守回退值。"""
+
+    title, artist = _read_audio_tags(path)
+    title = title or normalize_tag_value(fallback_title)
+    artist = artist or normalize_tag_value(fallback_artist)
+    if not title or not artist:
         raise MissingMetadataError("缺少 title 或 artist 标签")
     return title, artist
+
+
+def extract_webm_filename_title(path: Path) -> str:
+    """从 WebM 文件名提取歌曲名并移除 yt-dlp 格式后缀如 `.f248`。"""
+
+    title = path.stem
+    title = re.sub(r"\.f\d{3,4}$", "", title, flags=re.IGNORECASE)
+    return title.strip()
+
+
+def _normalize_artist_map_key(value: str) -> str:
+    """规范化 Artist 映射中的相对目录键，并拒绝越界路径。"""
+
+    value = value.strip().replace("\\", "/")
+    if value in {"", "."}:
+        return ""
+    relative_path = PurePosixPath(value)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise ValueError(f"Artist 映射目录必须是音乐库内的相对路径: {value}")
+    return relative_path.as_posix()
+
+
+def load_artist_map(map_path: Path | None) -> dict[str, str]:
+    """读取相对目录到 Artist 的 JSON 映射，文件不存在时返回空映射。"""
+
+    if map_path is None:
+        return {}
+    map_path = map_path.expanduser().resolve()
+    if not map_path.exists():
+        return {}
+    if not map_path.is_file():
+        raise ValueError(f"Artist 映射路径不是文件: {map_path}")
+    try:
+        payload = json.loads(map_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"Artist 映射 JSON 无法读取: {map_path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Artist 映射 JSON 必须是“相对目录”: “Artist”的对象")
+
+    artist_map: dict[str, str] = {}
+    for directory, artist in payload.items():
+        if not isinstance(directory, str) or not isinstance(artist, str):
+            raise ValueError("Artist 映射的目录和 Artist 都必须是字符串")
+        directory_key = _normalize_artist_map_key(directory)
+        artist_value = normalize_tag_value(artist)
+        if not artist_value:
+            raise ValueError(f"Artist 映射不能为空: {directory}")
+        artist_map[directory_key] = artist_value
+    return artist_map
+
+
+def _artist_for_directory(path: Path, root: Path, artist_map: Mapping[str, str]) -> str:
+    """根据文件所在目录的相对路径查找明确配置的 Artist。"""
+
+    relative_directory = path.parent.relative_to(root).as_posix()
+    if relative_directory == ".":
+        relative_directory = ""
+    return artist_map.get(relative_directory, "")
 
 
 def _is_hidden_relative_path(path: Path, root: Path) -> bool:
@@ -321,18 +395,29 @@ def iter_audio_files(root: Path) -> Iterator[Path]:
             yield path
 
 
-def scan_library(root: Path) -> ScanResult:
+def scan_library(
+    root: Path,
+    artist_map: Mapping[str, str] | None = None,
+) -> ScanResult:
     """扫描音乐库并读取所有可安全参与匹配的音频标签。"""
 
     root = root.expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"音乐库目录不存在或不可访问: {root}")
 
+    artist_map = artist_map or {}
     records: list[AudioRecord] = []
     issues: list[ScanIssue] = []
     for path in iter_audio_files(root):
         try:
-            title, artist = read_audio_metadata(path)
+            if path.suffix.casefold() == ".webm":
+                title, artist = read_audio_metadata(
+                    path,
+                    fallback_title=extract_webm_filename_title(path),
+                    fallback_artist=_artist_for_directory(path, root, artist_map),
+                )
+            else:
+                title, artist = read_audio_metadata(path)
             stat = path.stat()
         except MissingMetadataError as error:
             issues.append(ScanIssue(path, str(error), "info"))

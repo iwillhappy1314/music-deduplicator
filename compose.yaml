@@ -5,8 +5,10 @@ services:
       MUSIC_ROOT: /music
       DEDUP_QUARANTINE: /quarantine
       DEDUP_REPORT: /reports/latest.json
+      DEDUP_ARTIST_MAP: /config/artist-map.json
     volumes:
       - ${MUSIC_LIBRARY_PATH:-/volume1/music}:/music:rw
       - ${MUSIC_QUARANTINE_PATH:-/volume1/music-dedup-quarantine}:/quarantine:rw
       - ${MUSIC_REPORT_PATH:-/volume1/music-dedup-reports}:/reports:rw
+      - ${MUSIC_CONFIG_PATH:-/volume1/music-dedup-config}:/config:ro
     command: ["--report", "/reports/latest.json"]
