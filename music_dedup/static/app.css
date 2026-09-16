@@ -48,7 +48,7 @@ button { cursor: pointer; }
 h1, h2, p { margin: 0; }
 h1 { font-size: clamp(2rem, 4vw, 3.1rem); letter-spacing: -.04em; line-height: 1.05; }
 h2 { font-size: 1.08rem; letter-spacing: -.01em; }
-.console-header p, .section-heading p, .status-overview p, .token-field span { color: var(--muted); }
+.console-header p, .section-heading p, .status-overview p, .token-field label { color: var(--muted); }
 .console-header p { margin-top: 12px; font-size: .98rem; }
 
 .connection-state {
@@ -76,6 +76,11 @@ h2 { font-size: 1.08rem; letter-spacing: -.01em; }
   padding: 28px 0;
 }
 
+.metadata-section {
+  border-top: 1px solid var(--border);
+  padding: 28px 0;
+}
+
 .section-heading, .status-overview {
   display: flex;
   align-items: flex-start;
@@ -85,9 +90,12 @@ h2 { font-size: 1.08rem; letter-spacing: -.01em; }
 
 .section-heading p { margin-top: 7px; font-size: .88rem; }
 .section-heading--compact { align-items: center; }
+.metadata-state { margin-top: 20px; color: var(--muted); font-size: .82rem; }
+.metadata-state--success { color: var(--success); }
+.metadata-state--error { color: var(--danger); }
 
 .token-field { display: grid; gap: 7px; min-width: 220px; }
-.token-field span { font-size: .75rem; }
+.token-field label { font-size: .75rem; }
 .token-field input {
   width: 100%;
   color: var(--text);
@@ -147,6 +155,26 @@ h2 { font-size: 1.08rem; letter-spacing: -.01em; }
 .refresh-button:hover { background: var(--surface); border-color: #3b5680; }
 .log-view { min-height: 220px; max-height: 430px; margin: 20px 0 0; padding: 17px; overflow: auto; color: #c8d5e8; background: #09101d; border: 1px solid var(--border); border-radius: 10px; font: .75rem/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
 
+.metadata-list { display: grid; gap: 12px; margin-top: 16px; }
+.metadata-row { display: grid; grid-template-columns: minmax(190px, 1.25fr) repeat(3, minmax(130px, 1fr)) auto; gap: 12px; align-items: end; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.metadata-row__file { align-self: stretch; min-width: 0; }
+.metadata-row__file strong, .metadata-row__file small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.metadata-row__file strong { font-size: .86rem; }
+.metadata-row__file small { margin-top: 7px; color: var(--muted); font: .72rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.metadata-row__missing { display: inline-flex; gap: 5px; margin-top: 10px; color: var(--warning); font-size: .7rem; }
+.metadata-field { display: grid; gap: 6px; min-width: 0; }
+.metadata-field span { color: var(--muted); font-size: .72rem; }
+.metadata-field input { width: 100%; min-width: 0; padding: 9px 10px; color: var(--text); background: #0d1728; border: 1px solid var(--border); border-radius: 7px; outline: none; font-size: .8rem; }
+.metadata-field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(115, 167, 255, .13); }
+.metadata-row__actions { display: grid; gap: 7px; justify-items: end; }
+.metadata-save { padding: 9px 12px; color: #07101d; background: var(--accent); border: 0; border-radius: 7px; font-size: .78rem; font-weight: 700; white-space: nowrap; }
+.metadata-save:hover:not(:disabled) { background: #91baff; }
+.metadata-save:disabled { cursor: wait; opacity: .48; }
+.metadata-row__result { min-height: 1em; color: var(--muted); font-size: .7rem; white-space: nowrap; }
+.metadata-row__result--success { color: var(--success); }
+.metadata-row__result--error { color: var(--danger); }
+.metadata-empty { margin: 0; padding: 20px 0; color: var(--muted); font-size: .84rem; }
+
 @media (max-width: 680px) {
   .console-shell { width: min(100% - 28px, 560px); padding-top: 32px; }
   .console-header, .section-heading { display: grid; gap: 22px; }
@@ -154,4 +182,7 @@ h2 { font-size: 1.08rem; letter-spacing: -.01em; }
   .token-field { min-width: 0; }
   .action-grid { grid-template-columns: 1fr; }
   .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metadata-row { grid-template-columns: 1fr 1fr; }
+  .metadata-row__file, .metadata-row__actions { grid-column: 1 / -1; }
+  .metadata-row__actions { grid-template-columns: auto 1fr; align-items: center; }
 }

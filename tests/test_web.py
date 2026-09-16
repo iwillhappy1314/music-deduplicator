@@ -25,6 +25,7 @@ class WebJobTestCase(unittest.TestCase):
             quarantine=str(root / "quarantine"),
             report=str(root / "report.json"),
             artist_map=None,
+            lock_file=str(root / "lock"),
             host="127.0.0.1",
             port=18080,
             token="",

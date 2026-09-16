@@ -13,6 +13,19 @@ from pathlib import Path
 from socketserver import TCPServer
 from typing import Any
 
+from .core import load_artist_map, process_lock
+from .metadata import (
+    MetadataWriteError,
+    inspect_metadata_file,
+    resolve_metadata_path,
+    scan_metadata_issues,
+    write_audio_metadata,
+)
+
+
+class MetadataConflictError(Exception):
+    """表示用户编辑页面打开后音频文件已经发生变化。"""
+
 
 @dataclass(frozen=True)
 class WebConfig:
@@ -22,6 +35,7 @@ class WebConfig:
     quarantine: str
     report: str
     artist_map: str | None
+    lock_file: str
     host: str
     port: int
     token: str
@@ -203,6 +217,83 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: object
     handler.wfile.write(body)
 
 
+MAX_METADATA_BODY_BYTES = 64 * 1024
+
+
+def _read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """读取并验证元数据保存请求的 JSON 请求体。"""
+
+    content_length = handler.headers.get("Content-Length")
+    try:
+        body_length = int(content_length or "-1")
+    except ValueError as error:
+        raise ValueError("Content-Length 无效") from error
+    if body_length < 0 or body_length > MAX_METADATA_BODY_BYTES:
+        raise ValueError("请求体大小无效或超过限制")
+    try:
+        payload = json.loads(handler.rfile.read(body_length).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"请求体不是有效 JSON: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    return payload
+
+
+def _metadata_issues_response(manager: JobManager) -> dict[str, object]:
+    """在进程锁保护下扫描并构造元数据问题响应。"""
+
+    root = Path(manager.config.root).expanduser().resolve()
+    artist_map = load_artist_map(
+        Path(manager.config.artist_map) if manager.config.artist_map else None
+    )
+    with process_lock(Path(manager.config.lock_file)):
+        issues = scan_metadata_issues(root, artist_map)
+    return {
+        "count": len(issues),
+        "issues": [issue.to_report(root) for issue in issues],
+    }
+
+
+def _save_metadata_response(manager: JobManager, payload: dict[str, Any]) -> dict[str, object]:
+    """验证版本信息后保存单个音频的 Title、Artist 和 Album。"""
+
+    relative_path = payload.get("relative_path")
+    title = payload.get("title")
+    artist = payload.get("artist")
+    album = payload.get("album")
+    expected_size = payload.get("size_bytes")
+    expected_modified_ns_value = payload.get("modified_ns")
+    if not all(isinstance(value, str) for value in (relative_path, title, artist, album)):
+        raise ValueError("relative_path、title、artist 和 album 必须是字符串")
+    if not isinstance(expected_size, int) or isinstance(expected_size, bool):
+        raise ValueError("size_bytes 必须是整数")
+    if isinstance(expected_modified_ns_value, bool):
+        raise ValueError("modified_ns 必须是整数或数字字符串")
+    if isinstance(expected_modified_ns_value, int):
+        expected_modified_ns = expected_modified_ns_value
+    elif isinstance(expected_modified_ns_value, str) and expected_modified_ns_value.isdigit():
+        expected_modified_ns = int(expected_modified_ns_value)
+    else:
+        raise ValueError("modified_ns 必须是整数或数字字符串")
+
+    root = Path(manager.config.root).expanduser().resolve()
+    with process_lock(Path(manager.config.lock_file)):
+        path = resolve_metadata_path(root, relative_path)
+        stat = path.stat()
+        if stat.st_size != expected_size or stat.st_mtime_ns != expected_modified_ns:
+            raise MetadataConflictError("音频文件在编辑期间已发生变化，请刷新列表后重试")
+        write_audio_metadata(path, title, artist, album)
+        artist_map = load_artist_map(
+            Path(manager.config.artist_map) if manager.config.artist_map else None
+        )
+        issue = inspect_metadata_file(path, root, artist_map)
+    return {
+        "saved": True,
+        "relative_path": relative_path,
+        "issue": issue.to_report(root) if issue is not None else None,
+    }
+
+
 def _make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
     """创建绑定指定任务管理器的 HTTP 请求处理器。"""
 
@@ -221,11 +312,27 @@ def _make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
             if self.path == "/assets/app.js":
                 self._send_file("static/app.js", "text/javascript; charset=utf-8")
                 return
+            if self.path == "/favicon.ico":
+                self.send_response(204)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if self.path == "/api/status":
                 if not self._authorized():
                     _json_response(self, 401, {"error": "访问令牌无效"})
                     return
                 _json_response(self, 200, manager.status())
+                return
+            if self.path == "/api/metadata/issues":
+                if not self._authorized():
+                    _json_response(self, 401, {"error": "访问令牌无效"})
+                    return
+                try:
+                    _json_response(self, 200, _metadata_issues_response(manager))
+                except RuntimeError as error:
+                    _json_response(self, 409, {"error": str(error)})
+                except (OSError, ValueError) as error:
+                    _json_response(self, 500, {"error": str(error)})
                 return
             _json_response(self, 404, {"error": "Not Found"})
 
@@ -242,6 +349,27 @@ def _make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
             action = self.path[len(prefix) :]
             accepted, payload = manager.start(action)
             _json_response(self, 202 if accepted else 409, payload)
+
+        def do_PUT(self) -> None:
+            """处理单个音频的元数据保存请求。"""
+
+            if not self._authorized():
+                _json_response(self, 401, {"error": "访问令牌无效"})
+                return
+            if self.path != "/api/metadata":
+                _json_response(self, 404, {"error": "Not Found"})
+                return
+            try:
+                payload = _read_json_body(self)
+                result = _save_metadata_response(manager, payload)
+            except MetadataConflictError as error:
+                _json_response(self, 409, {"error": str(error)})
+            except RuntimeError as error:
+                _json_response(self, 409, {"error": str(error)})
+            except (MetadataWriteError, ValueError, OSError) as error:
+                _json_response(self, 400, {"error": str(error)})
+            else:
+                _json_response(self, 200, result)
 
         def _authorized(self) -> bool:
             """检查可选的 Web 控制台访问令牌。"""

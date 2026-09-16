@@ -25,10 +25,10 @@
           <h2 id="actions-title">执行操作</h2>
           <p>每次点击只启动一个后台任务，已有任务运行时不会重复执行。</p>
         </div>
-        <label class="token-field">
-          <span>访问令牌</span>
+        <form class="token-field" id="token-form">
+          <label for="token">访问令牌</label>
           <input id="token" type="password" autocomplete="off" placeholder="如未设置可留空">
-        </label>
+        </form>
       </div>
       <div class="action-grid">
         <button class="action-button action-button--primary" data-action="dedup">
@@ -55,6 +55,20 @@
           </span>
           <span><strong>全部执行</strong><small>依次完成去重、歌词和专辑封面</small></span>
         </button>
+      </div>
+    </section>
+
+    <section class="metadata-section" aria-labelledby="metadata-title">
+      <div class="section-heading section-heading--compact">
+        <div>
+          <h2 id="metadata-title">元数据问题</h2>
+          <p>列出 Title、Artist 或 Album 为空的歌曲，可直接修改后保存。</p>
+        </div>
+        <button class="refresh-button" id="metadata-refresh" type="button">扫描空字段</button>
+      </div>
+      <p class="metadata-state" id="metadata-state">正在等待扫描…</p>
+      <div class="metadata-list" id="metadata-list">
+        <p class="metadata-empty">正在读取音乐库…</p>
       </div>
     </section>
 

@@ -222,6 +222,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 quarantine=arguments.quarantine,
                 report=arguments.report or "/reports/latest.json",
                 artist_map=arguments.artist_map,
+                lock_file=arguments.lock_file,
                 host=arguments.web_host,
                 port=arguments.web_port,
                 token=arguments.web_token,
